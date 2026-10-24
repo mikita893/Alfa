@@ -1,14 +1,17 @@
 import http from 'node:http';
-import { createHash, timingSafeEqual } from 'node:crypto';
+import { authentication, createUser, passwordHash, checkPassword } from './auth.js';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+process.umask(0o077);
 const host=process.env.HOST || '127.0.0.1';
-const accessUser=process.env.ALFA_ACCESS_USER, accessPassword=process.env.ALFA_ACCESS_PASSWORD;
-if ((accessUser && !accessPassword) || (!accessUser && accessPassword) || (host!=='127.0.0.1' && (!accessUser || !accessPassword))) throw new Error('Publiczny nasłuch wymaga ALFA_ACCESS_USER i ALFA_ACCESS_PASSWORD.');
-const digest=value=>createHash('sha256').update(value).digest();
+const dev=process.env.ALFA_DEV_NO_AUTH==='1';
+const publicUrl=process.env.ALFA_PUBLIC_URL;
+if(dev && (host!=='127.0.0.1'||process.env.NODE_ENV==='production')) throw new Error('Tryb bez logowania jest dostępny wyłącznie lokalnie poza produkcją.');
+if(host!=='127.0.0.1'&&!publicUrl)throw new Error('Ustaw ALFA_PUBLIC_URL na publiczny adres HTTPS.');
+if(publicUrl && (!publicUrl.startsWith('https://') || new URL(publicUrl).origin!==publicUrl))throw new Error('ALFA_PUBLIC_URL musi być originem HTTPS bez końcowego ukośnika.');
 const root = dirname(fileURLToPath(import.meta.url));
 const dbPath = process.env.ALFA_DB || join(root, 'data', 'alfa.sqlite');
 mkdirSync(dirname(dbPath), { recursive: true });
@@ -44,6 +47,8 @@ if (!db.prepare('SELECT version FROM migrations WHERE version=2').get()) {
     db.exec('INSERT INTO attendance_v2 SELECT * FROM attendance; INSERT INTO migrations VALUES (2); COMMIT');
   } catch(e) {db.exec('ROLLBACK');throw e;}
 }
+// New tables are the only source of truth; do not retain deleted participants in legacy tables.
+db.exec('PRAGMA secure_delete=ON; DROP TABLE IF EXISTS attendance; DROP TABLE IF EXISTS people;');
 function seedRequestedEdition() {
   db.exec('BEGIN');
   try {
@@ -64,7 +69,6 @@ function seedRequestedEdition() {
 if(process.env.ALFA_SEED !== '0') seedRequestedEdition();
 const fields = {
   roles: ['name'], parishes: ['name','city'], editions: ['parish_id','name','date','end_date','location','status'],
-  people: ['edition_id','name','email','phone','role','group_name','status'],
   meetings: ['edition_id','title','date','time','location'], tasks: ['edition_id','title','owner','date','done']
 };
 const roles = ['Uczestnik','Koordynator','Duszpasterz','Prowadzący grupę','Pomocnik','Kuchnia','Technika'];
@@ -100,6 +104,7 @@ function validate(table, body) {
   return data;
 }
 function savePerson(body,id) {
+  if(!body||typeof body!=='object')throw fail('Nieprawidłowe dane.');
   const data=validate('parishes',{name:body.name,city:''});
   for(const key of ['email','phone']) if(body[key]!==undefined && (typeof body[key]!=='string' || body[key].length>200)) throw fail('Nieprawidłowy kontakt.');
   const email=(body.email||'').trim(), phone=(body.phone||'').trim();
@@ -138,20 +143,50 @@ async function readBody(req) {
   try { return JSON.parse(body); } catch { throw fail('Nieprawidłowy JSON.'); }
 }
 function json(res, status, value) { res.writeHead(status, {'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'}); res.end(JSON.stringify(value)); }
+const authenticate=authentication(db,{dev,publicUrl,readBody,json});
 const server = http.createServer(async (req,res) => {
   res.setHeader('X-Content-Type-Options','nosniff');
   res.setHeader('Referrer-Policy','no-referrer');
   res.setHeader('Content-Security-Policy', "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
   try {
-    if(accessUser && !timingSafeEqual(digest(req.headers.authorization||''),digest('Basic '+Buffer.from(accessUser+':'+accessPassword).toString('base64')))) {
-      res.writeHead(401,{'WWW-Authenticate':'Basic realm="Alpha Organizatorzy", charset="UTF-8"','Cache-Control':'no-store'});res.end('Wymagane logowanie organizatora.');return;
-    }
     const url = new URL(req.url, 'http://localhost');
+    const user=await authenticate(req,res,url);
+    if(!user)return;
+    if(url.pathname==='/api/me'&&req.method==='GET')return json(res,200,{id:user.id,name:user.name,admin:!!user.admin,csrf:user.csrf});
+    if(url.pathname==='/api/password'&&req.method==='POST'){
+      const body=await readBody(req),account=db.prepare('SELECT password_hash FROM users WHERE id=?').get(user.id);
+      if(!account||typeof body?.old_password!=='string'||body.old_password.length>128||!await checkPassword(body.old_password,account.password_hash))throw fail('Nieprawidłowe obecne hasło.',403);
+      const encoded=await passwordHash(body.new_password);
+      db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(encoded,user.id);
+      db.prepare('DELETE FROM sessions WHERE user_id=?').run(user.id);
+      db.prepare('INSERT INTO audit(user_id,action,target) VALUES (?,?,?)').run(user.id,'change-password','self');
+      return json(res,200,{ok:true});
+    }
+    if(url.pathname==='/api/users'&&req.method==='GET'){
+      if(!user.admin)throw fail('Wymagane uprawnienia administratora.',403);
+      return json(res,200,db.prepare('SELECT id,login,name,admin,active FROM users ORDER BY name').all());
+    }
+    if(url.pathname==='/api/users'&&req.method==='POST'){
+      if(!user.admin)throw fail('Wymagane uprawnienia administratora.',403);
+      const id=await createUser(db,await readBody(req));
+      db.prepare('INSERT INTO audit(user_id,action,target) VALUES (?,?,?)').run(user.id,'create-user',String(id));
+      return json(res,201,{id});
+    }
+    const disable=url.pathname.match(/^\/api\/users\/(\d+)\/disable$/);
+    if(disable&&req.method==='POST'){
+      if(!user.admin)throw fail('Wymagane uprawnienia administratora.',403);
+      const id=Number(disable[1]);if(id===user.id)throw fail('Nie możesz zablokować własnego konta.');
+      if(!db.prepare('UPDATE users SET active=0 WHERE id=?').run(id).changes)throw fail('Nie znaleziono konta.',404);
+      db.prepare('DELETE FROM sessions WHERE user_id=?').run(id);
+      db.prepare('INSERT INTO audit(user_id,action,target) VALUES (?,?,?)').run(user.id,'disable-user',String(id));
+      return json(res,200,{ok:true});
+    }
+    if(user.id&&!['GET','HEAD'].includes(req.method))res.once('finish',()=>{if(res.statusCode<400)db.prepare('INSERT INTO audit(user_id,action,target) VALUES (?,?,?)').run(user.id,req.method,url.pathname);});
     if (url.pathname.startsWith('/api/')) {
       if (!['GET','HEAD'].includes(req.method)) {
         const origin = req.headers.origin;
-        if ((origin && origin !== `http://${req.headers.host}` && origin !== `https://${req.headers.host}`) || req.headers['sec-fetch-site'] === 'cross-site') throw fail('Niedozwolone źródło żądania.',403);
-        if (!req.headers['content-type']?.startsWith('application/json')) throw fail('Wymagany format JSON.',415);
+        if ((origin && origin !== (publicUrl || `http://${req.headers.host}`)) || req.headers['sec-fetch-site'] === 'cross-site') throw fail('Niedozwolone źródło żądania.',403);
+        if (req.headers['content-type']?.split(';')[0].trim()!=='application/json') throw fail('Wymagany format JSON.',415);
       }
       if (url.pathname === '/api/state' && req.method === 'GET') {
         const result = Object.fromEntries(Object.keys(fields).map(t=>[t,db.prepare(`SELECT * FROM ${t} ORDER BY id`).all()]));
@@ -198,7 +233,7 @@ const server = http.createServer(async (req,res) => {
       throw fail('Niedozwolona operacja.',405);
     }
     if (req.method !== 'GET' && req.method !== 'HEAD') throw fail('Niedozwolona operacja.',405);
-    const files = {'/':['index.html','text/html; charset=utf-8'],'/app.js':['app.js','text/javascript; charset=utf-8'],'/style.css':['style.css','text/css; charset=utf-8']};
+    const files = {'/login':['login.html','text/html; charset=utf-8'],'/auth-client.js':['auth-client.js','text/javascript; charset=utf-8'],'/':['index.html','text/html; charset=utf-8'],'/app.js':['app.js','text/javascript; charset=utf-8'],'/style.css':['style.css','text/css; charset=utf-8']};
     const file=files[url.pathname];
     if (!file) throw fail('Nie znaleziono strony.',404);
     res.writeHead(200,{'Content-Type':file[1],'Cache-Control':'no-cache'});
@@ -210,6 +245,6 @@ const server = http.createServer(async (req,res) => {
   }
 });
 server.listen(Number(process.env.PORT || 3000),host,()=>console.log(`Alpha: port ${server.address().port} (lokalny prototyp)`));
-function shutdown() { server.close(()=>{db.close(); process.exit(0);}); }
+function shutdown() { server.close(()=>{db.exec('PRAGMA wal_checkpoint(TRUNCATE)');db.close(); process.exit(0);}); }
 process.on('SIGTERM',shutdown);
 process.on('SIGINT',shutdown);

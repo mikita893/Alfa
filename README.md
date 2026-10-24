@@ -7,12 +7,18 @@ Prosty CRM dla organizatorów katolickich kursów Alpha. Na pierwszym ekranie: e
 Node.js 24+. Brak zewnętrznych zależności i procesu budowania.
 
 ```sh
+node manage-users.js create-admin twoj-login
 npm start
+```
+
+Polecenie tworzenia administratora pyta o hasło w terminalu i ukrywa wpisywane znaki. Nie umieszczaj hasła w argumentach, repozytorium ani czacie. Domyślnie aplikacja słucha wyłącznie lokalnie na porcie 3000, ale również lokalnie wymaga logowania. Nie ma konta domyślnego ani publicznej rejestracji. Kolejne konta dodaje administrator w zakładce **Dostęp organizatorów**.
+
+```sh
 npm run check
 npm test
 ```
 
-Domyślnie nasłuch wyłącznie lokalny, port 3000. Nie jest to publiczne wdrożenie. Test integracyjny uruchamia własne serwery, używa osobnej tymczasowej bazy i kończy ich działanie.
+Testy uruchamiają własne serwery i tymczasowe bazy, a następnie je zatrzymują. `ALFA_DEV_NO_AUTH=1` wyłącza logowanie wyłącznie przy lokalnym nasłuchu poza trybem produkcyjnym; jest przeznaczone do testów z fikcyjnymi danymi.
 
 ## Model danych
 
@@ -27,24 +33,28 @@ Na nowej bazie aplikacja zakłada parafię **Zmartwychwstania Pańskiego**, edyc
 
 ## Trwałość i migracja
 
-SQLite: `data/alfa.sqlite` oraz pliki WAL. Katalog jest ignorowany przez Git i Docker. Przed aktualizacją wykonaj kopię zapasową przy zatrzymanej aplikacji (lub użyj mechanizmu SQLite backup/VACUUM INTO). Migracja zachowuje stare karty osób i obecności; nie scala automatycznie podobnych nazwisk ani adresów e-mail. Stare daty zakończenia pozostają do uzupełnienia. Historyczne tabele pozostają jako kopia po migracji; zmiany interfejsu zapisują się w nowym modelu.
+SQLite: `data/alfa.sqlite` oraz pliki WAL. Katalog jest ignorowany przez Git i Docker. Przed aktualizacją wykonaj kopię zapasową przy zatrzymanej aplikacji (lub użyj mechanizmu SQLite backup/VACUUM INTO). Migracja zachowuje stare karty osób i obecności; nie scala automatycznie podobnych nazwisk ani adresów e-mail. Stare daty zakończenia pozostają do uzupełnienia. Po migracji historyczne tabele osób i obecności są usuwane, aby usunięta osoba nie pozostawała w ukrytej kopii. Kopie zapasowe mają odrębną retencję; nie przechowuj ich bezterminowo.
 
 `ALFA_DB` wskazuje ścieżkę bazy, `PORT` port, `ALFA_SEED=0` wyłącza dodawanie danych startowych. Startowe wpisy tworzone są tylko, jeśli ich brakuje; edycja wprowadzona przez organizatora nie jest nadpisywana przy restarcie. Osoba testowa może zostać ponownie dodana po usunięciu, jeśli seed jest włączony — na docelowym serwerze po inicjalizacji ustaw `ALFA_SEED=0`.
 
-## Wdrożenie na serwerze
+## Dostęp i wdrożenie
 
-Potrzebny hosting z Node.js 24 lub Dockerem, **trwałym dyskiem** i HTTPS. Statyczny hosting plików (np. same GitHub Pages) nie obsłuży API i SQLite. Środowisko rozmowy ChatGPT nie stanowi publicznego hostingu aplikacji.
+Pełna instrukcja: [docs/HOSTING.md](docs/HOSTING.md). Przygotowano `compose.yaml` z aplikacją, trwałym wolumenem SQLite i Caddy do HTTPS. Potrzebujesz hostingu/maszyny i domeny; środowisko rozmowy nie jest publicznym hostingiem.
 
-Dockerfile przygotowuje serwer na porcie 3000. Montuj trwały dysk w `/app/data`; zapewnij uprawnienia zapisu użytkownikowi `node` (UID 1000). Ustaw bezpiecznie w hostingu:
+Wersja 0.3 zastępuje wspólne hasło HTTP Basic osobnymi kontami organizatorów:
 
-- `ALFA_ACCESS_USER` — nazwa organizatora;
-- `ALFA_ACCESS_PASSWORD` — silne hasło, nigdy w repozytorium ani w czacie;
-- `HOST=0.0.0.0` (ustawione w obrazie);
-- `ALFA_DB=/app/data/alfa.sqlite` (ustawione w obrazie).
+- hasła scrypt z losową solą; brak przechowywania haseł w postaci jawnej;
+- losowe sesje, w bazie tylko skróty tokenów; ciasteczka HttpOnly, SameSite=Strict i Secure dla publicznego HTTPS;
+- wygaśnięcie po 8 godzinach lub 30 minutach bezczynności;
+- zabezpieczenie żądań zapisu tokenem CSRF i kontrolą źródła;
+- ograniczenie prób logowania;
+- dodawanie kont i odbieranie dostępu przez administratora; blokada konta unieważnia sesje;
+- zmiana własnego hasła unieważnia wszystkie sesje;
+- dziennik operacji w tabeli audit (identyfikator użytkownika, czas, operacja i ścieżka; bez treści formularzy).
 
-Serwer odmówi publicznego nasłuchu bez danych logowania. HTTP Basic chroni wszystkie strony i API; reverse proxy musi zapewniać HTTPS i przekazywać nagłówek Authorization. Pierwsze otwarcie adresu wyświetli okno logowania przeglądarki. To jedno współdzielone konto organizatorów, bez indywidualnych uprawnień do parafii. Nie stanowi pełnego systemu kont. Przed użyciem rzeczywistych danych wymagane są odpowiednie zasady dostępu, retencji, kopie zapasowe i ustalenie zasad przetwarzania danych dotyczących religii.
+Zmienne `ALFA_ACCESS_USER` i `ALFA_ACCESS_PASSWORD` nie służą już do logowania. Dotychczasowy operator musi utworzyć nowe konto CLI. Do publicznego nasłuchu wymagany jest `ALFA_PUBLIC_URL`, np. `https://alpha.twoja-domena.pl` (bez końcowego ukośnika) i TLS na reverse proxy. Nie wystawiaj portu aplikacji bezpośrednio do internetu.
 
-Nie przechowujemy treści rozmów, ocen wiary ani informacji ze spowiedzi. Korzystaj obecnie z danych testowych.
+**Każdy aktywny organizator widzi całą bazę**, także inne parafie. Tylko administrator zarządza kontami. Nie zaimplementowano odrębnych uprawnień do parafii ani MFA. Testy nie są niezależnym audytem bezpieczeństwa ani potwierdzeniem zgodności z RODO. Przed użyciem danych rzeczywistych potrzebne są decyzje administratora danych o podstawie przetwarzania, dostępie i retencji oraz sprawdzone kopie zapasowe. Nie zapisuj treści rozmów ani informacji ze spowiedzi.
 
 ## Projekt wizualny
 

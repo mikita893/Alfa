@@ -21,7 +21,7 @@ test('Legacy migration retains contacts and attendance and is repeatable',async(
  INSERT INTO attendance VALUES(1,1);`);db.close();
  try {
   for(let i=0;i<2;i++){
-   const child=spawn(process.execPath,['server.js'],{env:{...process.env,PORT:'0',ALFA_DB:path,ALFA_SEED:'0'},stdio:['ignore','pipe','pipe']});
+   const child=spawn(process.execPath,['server.js'],{env:{...process.env,PORT:'0',ALFA_DB:path,ALFA_SEED:'0',ALFA_DEV_NO_AUTH:'1'},stdio:['ignore','pipe','pipe']});
    const chunk=await once(child.stdout,'data');const port=String(chunk[0]).match(/port (\d+)/)[1];
    const state=await (await fetch(`http://127.0.0.1:${port}/api/state`)).json();
    const exited=once(child,'exit');child.kill();await exited;

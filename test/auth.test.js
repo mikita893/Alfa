@@ -1,0 +1,50 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {DatabaseSync} from 'node:sqlite';
+import {authSchema,createUser} from '../auth.js';
+import {spawn} from 'node:child_process';
+import {once} from 'node:events';
+import {mkdtemp,rm} from 'node:fs/promises';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
+test('Private accounts: auth, CSRF, permissions, logout, revocation, password change and rate limiting',async()=>{
+ const dir=await mkdtemp(join(tmpdir(),'alpha-private-'));const path=join(dir,'test.sqlite');
+ let db=new DatabaseSync(path);authSchema(db);
+ await createUser(db,{login:'admin@example.com',name:'Admin',password:'temporary-test-password',admin:true});
+ await createUser(db,{login:'member@example.com',name:'Member',password:'temporary-test-password',admin:false});
+ assert.ok(!db.prepare('SELECT password_hash FROM users LIMIT 1').get().password_hash.includes('temporary'));db.close();
+ const child=spawn(process.execPath,['server.js'],{env:{...process.env,PORT:'0',ALFA_DB:path,ALFA_SEED:'0',ALFA_DEV_NO_AUTH:'0',ALFA_PUBLIC_URL:'https://alpha.example.org'},stdio:['ignore','pipe','pipe']});
+ const [chunk]=await once(child.stdout,'data');const base='http://127.0.0.1:'+String(chunk).match(/port (\d+)/)[1];
+ const req=(path,method='GET',body,cookie='',csrf='',origin='https://alpha.example.org')=>fetch(base+path,{method,redirect:'manual',headers:{...(body===undefined?{}:{'Content-Type':'application/json',Origin:origin}),Cookie:cookie,'X-CSRF-Token':csrf},body:body===undefined?undefined:JSON.stringify(body)});
+ const login=async(name,password='temporary-test-password')=>{
+  const r=await req('/api/login','POST',{login:name,password});assert.equal(r.status,200);const raw=r.headers.get('set-cookie');assert.match(raw,/HttpOnly/);assert.match(raw,/SameSite=Strict/);assert.match(raw,/Secure/);assert.match(raw,/__Host-/);
+  const cookie=raw.split(';')[0];const me=await(await req('/api/me','GET',undefined,cookie)).json();return {cookie,...me};
+ };
+ try{
+  assert.equal((await req('/')).status,303);assert.equal((await req('/api/state')).status,401);
+  assert.equal((await req('/login')).status,200);
+  assert.equal((await req('/api/users','POST',{login:'intruder'})).status,401);
+  assert.equal((await req('/api/login','POST',{login:'admin@example.com',password:'wrong'})).status,401);
+  const admin=await login('admin@example.com');const member=await login('member@example.com');
+  assert.equal((await req('/api/state','GET',undefined,member.cookie)).status,200);
+  assert.equal((await req('/api/users','GET',undefined,member.cookie)).status,403);
+  assert.equal((await req('/api/people','POST',{name:'Test'},admin.cookie)).status,403);
+  assert.equal((await req('/api/people','POST',{name:'Test'},admin.cookie,admin.csrf,'https://evil.example')).status,403);
+  assert.equal((await req('/api/people','POST',{name:'Test'},admin.cookie,admin.csrf)).status,201);
+  assert.equal((await req('/api/users','POST',{login:'third@example.com',name:'Third',password:'another-test-password',admin:false},admin.cookie,admin.csrf)).status,201);
+  const third=await login('third@example.com','another-test-password');
+  assert.equal((await req('/api/users/'+third.id+'/disable','POST',{},admin.cookie,admin.csrf)).status,200);
+  assert.equal((await req('/api/state','GET',undefined,third.cookie)).status,401);
+  assert.equal((await req('/api/login','POST',{login:'third@example.com',password:'another-test-password'})).status,401);
+  assert.equal((await req('/api/users/'+admin.id+'/disable','POST',{},admin.cookie,admin.csrf)).status,400);
+  assert.equal((await req('/api/password','POST',{old_password:'temporary-test-password',new_password:'changed-test-password'},member.cookie,member.csrf)).status,200);
+  assert.equal((await req('/api/state','GET',undefined,member.cookie)).status,401);
+  const changed=await login('member@example.com','changed-test-password');
+  assert.equal((await req('/api/logout','POST',{},changed.cookie,changed.csrf)).status,200);
+  assert.equal((await req('/api/state','GET',undefined,changed.cookie)).status,401);
+  for(let i=0;i<10;i++)assert.equal((await req('/api/login','POST',{login:'unknown',password:'not-a-password'})).status,401);
+  assert.equal((await req('/api/login','POST',{login:'unknown',password:'not-a-password'})).status,429);
+  db=new DatabaseSync(path);db.prepare('UPDATE sessions SET touched=0').run();db.close();
+  assert.equal((await req('/api/state','GET',undefined,admin.cookie)).status,401);
+ }finally{const exited=once(child,'exit');child.kill();await exited;await rm(dir,{recursive:true,force:true});}
+});

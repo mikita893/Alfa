@@ -1,0 +1,34 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 3000
+      ALFA_PUBLIC_URL: https://${DOMAIN:?Ustaw DOMAIN w .env}
+      ALFA_DB: /app/data/alfa.sqlite
+      ALFA_SEED: ${ALFA_SEED:-0}
+    volumes:
+      - alpha_data:/app/data
+    networks: [private]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443", "443:443/udp"]
+    environment:
+      DOMAIN: ${DOMAIN:?Ustaw DOMAIN w .env}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [private]
+    depends_on: [app]
+volumes:
+  alpha_data:
+  caddy_data:
+  caddy_config:
+networks:
+  private:

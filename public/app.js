@@ -1,3 +1,4 @@
+let currentUser;
 const $ = s => document.querySelector(s);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const roles = () => state.roles.map(r=>r.name);
@@ -17,7 +18,8 @@ const initials = name => name.replace(/^ks\.\s*/,'').split(/\s+/).slice(0,2).map
 const badge = status => `<span class="badge ${['Potwierdzony','Trwa'].includes(status)?'green':status==='Rezygnacja'?'gray':'amber'}">${esc(status)}</span>`;
 const empty = (title, text, action='', label='') => `<div class="empty"><span class="empty-symbol">✳</span><h3>${title}</h3><p>${text}</p>${action?`<button class="button primary" data-add="${action}">${label}</button>`:''}</div>`;
 async function api(path, method='GET', body) {
-  const response=await fetch(`/api/${path}`, {method, headers:body===undefined?{}:{'Content-Type':'application/json'}, body:body===undefined?undefined:JSON.stringify(body)});
+  const response=await fetch(`/api/${path}`, {method, headers:body===undefined?{}:{'Content-Type':'application/json','X-CSRF-Token':currentUser?.csrf||''}, body:body===undefined?undefined:JSON.stringify(body)});
+  if(response.status===401){location.replace('/login');throw new Error('Sesja wygasła. Zaloguj się ponownie.');}
   const data=await response.json();
   if(!response.ok) throw new Error(data.error || 'Nie udało się zapisać danych.');
   return data;
@@ -148,7 +150,7 @@ document.addEventListener('click',async e=>{
 });
 document.addEventListener('change',async e=>{
   const t=e.target;
-  if(t.id==='parish') { parishId=Number(t.value);editionId=undefined;search='';roleFilter='';groupFilter='';await refresh().catch(err=>toast(err.message)); }
+  if(t.id==='parish') { parishId=Number(t.value);editionId=undefined;search='';roleFilter='';groupFilter='';await initialize().catch(err=>toast(err.message)); }
   if(t.id==='edition') { editionId=Number(t.value);search='';roleFilter='';groupFilter='';render(); }
   if(t.name?.startsWith('join_')) t.closest('fieldset').querySelector('.membership-fields').hidden=!t.checked;
   if(t.id==='people-scope') {showAllPeople=t.value==='all';renderPeople();}
@@ -186,4 +188,36 @@ $('#entry-form').addEventListener('submit',async e=>{
   } catch(err) {$('#form-error').textContent=err.message;}
   finally {$('#save-button').disabled=false;}
 });
-refresh().catch(err=>{$('#view').innerHTML=empty('Nie udało się wczytać danych',esc(err.message));});
+initialize().catch(err=>{$('#view').innerHTML=empty('Nie udało się wczytać danych',esc(err.message));});
+
+async function initialize(){
+ currentUser=await api('me');
+ document.querySelector('.profile>div').replaceChildren(document.createTextNode(currentUser.name));
+ document.querySelector('#access-nav').hidden=!currentUser.admin;
+ await refresh();
+}
+async function accessPanel(){
+ const users=await api('users');
+ $('#modal-title').textContent='Dostęp organizatorów';$('#save-button').hidden=true;$('#form-error').textContent='';formContext=null;
+ $('#form-fields').innerHTML=`<p class="form-note">Każde aktywne konto ma dostęp do całej bazy parafii. Administrator może tworzyć konta i odbierać dostęp.</p>${users.map(u=>`<div class="edition-row"><div><strong>${esc(u.name)}</strong><small>${esc(u.login)} · ${u.admin?'Administrator':'Organizator'} · ${u.active?'Aktywne':'Zablokowane'}</small></div>${u.active&&u.id!==currentUser.id?`<button type="button" class="text-button" data-disable-user="${u.id}">Odbierz dostęp</button>`:''}</div>`).join('')}<h3>Dodaj organizatora</h3>${input('account_name','Imię organizatora','text',true)}${input('account_login','Login (np. e-mail)','text',true)}<label class="field"><span>Hasło początkowe (12–128 znaków)</span><input name="account_password" type="password" minlength="12" maxlength="128" autocomplete="new-password"></label><label class="check-field"><input type="checkbox" name="account_admin"> Administrator</label><button type="button" class="button primary" id="create-account">Utwórz konto</button><p class="form-note">Przekaż hasło bezpiecznym kanałem. Organizator może zmienić je po zalogowaniu. Nie przesyłaj haseł w czacie ani w repozytorium.</p>`;
+ $('#modal').showModal();
+}
+document.addEventListener('click',async e=>{
+ const b=e.target.closest('button');if(!b)return;
+ try{
+  if(b.id==='logout'){await api('logout','POST',{});location.replace('/login');}
+  if(b.id==='access-nav')await accessPanel();
+  if(b.dataset.disableUser){if(!confirm('Odebrać dostęp i wylogować tę osobę?'))return;await api('users/'+b.dataset.disableUser+'/disable','POST',{});$('#modal').close();await accessPanel();}
+  if(b.id==='create-account'){
+   const form=$('#entry-form');b.disabled=true;
+   await api('users','POST',{name:form.elements.account_name.value,login:form.elements.account_login.value,password:form.elements.account_password.value,admin:form.elements.account_admin.checked});
+   form.elements.account_password.value='';$('#modal').close();await accessPanel();toast('Utworzono konto organizatora.');
+  }
+  if(b.id==='change-password'){
+   $('#modal-title').textContent='Zmień hasło';$('#save-button').hidden=true;$('#form-error').textContent='';formContext=null;
+   $('#form-fields').innerHTML='<label class="field"><span>Obecne hasło</span><input name="old_password" type="password" autocomplete="current-password"></label><label class="field"><span>Nowe hasło (12–128 znaków)</span><input name="new_password" type="password" minlength="12" maxlength="128" autocomplete="new-password"></label><button type="button" id="save-password" class="button primary">Zmień hasło i wyloguj</button>';
+   $('#modal').showModal();
+  }
+  if(b.id==='save-password'){b.disabled=true;const f=$('#entry-form');await api('password','POST',{old_password:f.elements.old_password.value,new_password:f.elements.new_password.value});f.reset();location.replace('/login');}
+ }catch(err){$('#form-error').textContent=err.message;b.disabled=false;}
+});
