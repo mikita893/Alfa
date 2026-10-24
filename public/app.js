@@ -1,10 +1,15 @@
 const $ = s => document.querySelector(s);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const roles = ['Uczestnik','Koordynator','Duszpasterz','Prowadzący grupę','Pomocnik','Kuchnia','Technika'];
-let state, parishId, editionId, view = 'dashboard', search = '', roleFilter = '', groupFilter = '', formContext;
+const roles = () => state.roles.map(r=>r.name);
+let state, parishId, editionId, view = 'people', search = '', roleFilter = '', groupFilter = '', formContext;
 const today = () => new Date().toLocaleDateString('sv-SE', {timeZone:'Europe/Warsaw'});
-const dateLabel = (date, options={day:'numeric',month:'long'}) => date ? new Date(`${date}T12:00:00`).toLocaleDateString('pl-PL', options) : '—';
-const people = () => state.people.filter(p=>p.edition_id===editionId);
+const dateLabel = (date, options={day:'numeric',month:'long'}) => date ? new Date(`${date.length===7?date+'-01':date}T12:00:00`).toLocaleDateString('pl-PL', options) : '—';
+let showAllPeople=false;
+const people = () => state.people.filter(p=>showAllPeople || p.enrollments.some(e=>e.edition_id===editionId)).map(p=>{
+ const e=p.enrollments.find(e=>e.edition_id===editionId);
+ const names=e?.role_ids.map(id=>state.roles.find(r=>r.id===id)?.name).filter(Boolean)||[];
+ return {...p,role:names.join(', '),role_names:names,group_name:e?.group_name||'',status:e?.status||'Bez edycji'};
+});
 const meetings = () => state.meetings.filter(m=>m.edition_id===editionId).sort((a,b)=>(a.date+a.time).localeCompare(b.date+b.time));
 const tasks = () => state.tasks.filter(t=>t.edition_id===editionId).sort((a,b)=>a.done-b.done || a.date.localeCompare(b.date));
 const edition = () => state.editions.find(e=>e.id===editionId);
@@ -20,7 +25,7 @@ async function api(path, method='GET', body) {
 function toast(message) { $('#toast').textContent=message; $('#toast').classList.add('show'); clearTimeout(toast.timer); toast.timer=setTimeout(()=>$('#toast').classList.remove('show'),3500); }
 async function refresh() {
   state=await api('state');
-  if(!state.parishes.some(p=>p.id===parishId)) parishId=state.parishes[0]?.id;
+  if(!state.parishes.some(p=>p.id===parishId)) parishId=(state.parishes.find(p=>p.name==='Parafia Zmartwychwstania Pańskiego')||state.parishes[0])?.id;
   const editions=state.editions.filter(e=>e.parish_id===parishId);
   if(!editions.some(e=>e.id===editionId)) editionId=editions[0]?.id;
   $('#parish').innerHTML=state.parishes.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('');
@@ -30,18 +35,18 @@ async function refresh() {
   render();
 }
 function render() {
-  const titles={dashboard:['Spokojnie. Wszystko pod kontrolą.','Mniej organizowania, więcej miejsca na spotkanie.','＋ Dodaj osobę','people'],people:['Każda osoba ma tu swoje miejsce.','Uczestnicy, prowadzący i zespół — w jednej przestrzeni.','＋ Dodaj osobę','people'],meetings:['Spotkajmy się przy jednym stole.','Zaplanuj kolejne wieczory i zaznacz obecności.','＋ Dodaj spotkanie','meetings'],tasks:['Dobra organizacja to praca zespołowa.','Małe zadania, wspólna odpowiedzialność.','＋ Dodaj zadanie','tasks'],settings:['Jedna przestrzeń. Wiele wspólnot.','Zarządzaj parafiami i kolejnymi edycjami kursu.','＋ Dodaj parafię','parishes']};
+  const titles={dashboard:['Spokojnie. Wszystko pod kontrolą.','Mniej organizowania, więcej miejsca na spotkanie.','＋ Dodaj osobę','people'],people:['Uczestnicy','Jedna karta osoby. Wszystkie edycje i role w jednym miejscu.','＋ Dodaj osobę','people'],meetings:['Spotkajmy się przy jednym stole.','Zaplanuj kolejne wieczory i zaznacz obecności.','＋ Dodaj spotkanie','meetings'],tasks:['Dobra organizacja to praca zespołowa.','Małe zadania, wspólna odpowiedzialność.','＋ Dodaj zadanie','tasks'],settings:['Jedna przestrzeń. Wiele wspólnot.','Zarządzaj parafiami i kolejnymi edycjami kursu.','＋ Dodaj parafię','parishes']};
   const [title,description,action,table]=titles[view];
   $('#page-title').textContent=title; $('#page-description').textContent=description;
   $('#main-action').textContent=action; $('#main-action').dataset.add=table;
-  $('#main-action').disabled=!editionId && view!=='settings';
+  $('#main-action').disabled=!editionId && !['people','settings'].includes(view);
   $('#breadcrumb').textContent=`Twoja przestrzeń / ${{dashboard:'Pulpit',people:'Osoby i grupy',meetings:'Spotkania',tasks:'Zadania zespołu',settings:'Parafie i edycje'}[view]}`;
   document.querySelectorAll('[data-view]').forEach(b=>b.classList.toggle('active',b.dataset.view===view));
   const e=edition();
   $('#edition-name').textContent=e?.name || 'Zacznij od nowej edycji';
-  $('#edition-description').textContent=e?`${e.location || 'Miejsce do ustalenia'} · start ${dateLabel(e.date)}`:'Dodaj edycję w zakładce Parafie i edycje';
+  $('#edition-description').textContent=e?`${e.location || 'Miejsce do ustalenia'} · ${e.date.length===7?e.date:dateLabel(e.date)} — ${e.end_date||'ustal zakończenie'}`:'Dodaj edycję w zakładce Parafie i edycje';
   $('#edition-status').textContent=e?.status || '';
-  if(!editionId && view!=='settings') { $('#view').innerHTML=empty('Nowy początek','Dodaj edycję Alpha, aby zaprosić osoby i zaplanować spotkania.','editions','Utwórz edycję'); return; }
+  if(!editionId && !['people','settings'].includes(view)) { $('#view').innerHTML=empty('Nowy początek','Dodaj edycję Alpha, aby zaprosić osoby i zaplanować spotkania.','editions','Utwórz edycję'); return; }
   ({dashboard:renderDashboard,people:renderPeople,meetings:renderMeetings,tasks:renderTasks,settings:renderSettings})[view]();
 }
 function meetingCard(m, compact=false) {
@@ -54,8 +59,8 @@ function taskRow(t) {
   return `<div class="task-row ${t.done?'completed':''}"><input type="checkbox" data-toggle-task="${t.id}" ${t.done?'checked':''} aria-label="Ukończ: ${esc(t.title)}"><div><strong>${esc(t.title)}</strong><span>${esc(t.owner || 'Bez przypisania')} <span class="${overdue?'overdue':''}">· ${dateLabel(t.date)}</span></span></div><button class="icon-button" data-edit="tasks" data-id="${t.id}" aria-label="Edytuj zadanie">✎</button></div>`;
 }
 function renderDashboard() {
-  const participants=people().filter(p=>p.role==='Uczestnik'&&p.status!=='Rezygnacja');
-  const team=people().filter(p=>p.role!=='Uczestnik'&&p.status!=='Rezygnacja');
+  const participants=people().filter(p=>p.role_names.includes('Uczestnik')&&p.status!=='Rezygnacja');
+  const team=people().filter(p=>!p.role_names.includes('Uczestnik')&&p.status!=='Rezygnacja');
   const groups=new Set(people().filter(p=>p.status!=='Rezygnacja').map(p=>p.group_name).filter(Boolean));
   const upcoming=meetings().filter(m=>m.date>=today()).slice(0,2);
   const pending=tasks().filter(t=>!t.done);
@@ -65,12 +70,12 @@ function renderDashboard() {
   <section class="panel people-preview"><div class="section-heading"><div><span class="eyebrow">LUDZIE SĄ W CENTRUM</span><h2>Ostatnio dodane osoby</h2></div><button class="text-button" data-view="people">Zobacz wszystkich ↗</button></div>${people().length?personTable(people().slice(-4).reverse(),false):empty('Zacznij od ludzi','Dodaj pierwszego uczestnika lub osobę z zespołu.','people','Dodaj osobę')}</section>`;
 }
 function personTable(list,editable=true) {
-  return `<div class="table-wrap"><table><thead><tr><th>Osoba</th><th>Rola</th><th>Grupa</th><th>Status</th>${editable?'<th><span class="sr-only">Akcje</span></th>':''}</tr></thead><tbody>${list.map(p=>`<tr><td><div class="person-cell"><span class="avatar tone-${p.id%4}">${esc(initials(p.name))}</span><div><strong>${esc(p.name)}</strong><small>${esc(p.email || p.phone || 'Brak danych kontaktowych')}</small></div></div></td><td>${esc(p.role)}</td><td>${p.group_name?`<span class="group-tag">${esc(p.group_name)}</span>`:'<span class="muted">Nieprzypisana</span>'}</td><td>${badge(p.status)}</td>${editable?`<td><button class="text-button" data-edit="people" data-id="${p.id}">Edytuj</button></td>`:''}</tr>`).join('')}</tbody></table></div>`;
+  return `<div class="table-wrap"><table><thead><tr><th>Osoba</th><th>Rola</th><th>Grupa</th><th>Status</th>${editable?'<th><span class="sr-only">Akcje</span></th>':''}</tr></thead><tbody>${list.map(p=>`<tr><td><div class="person-cell"><span class="avatar tone-${p.id%4}">${esc(initials(p.name))}</span><div><strong>${esc(p.name)}</strong><small>${esc(p.email || p.phone || 'Brak danych kontaktowych')}</small></div></div></td><td>${esc(p.role||'Bez roli')}</td><td>${p.group_name?`<span class="group-tag">${esc(p.group_name)}</span>`:'<span class="muted">Nieprzypisana</span>'}</td><td>${badge(p.status)}</td>${editable?`<td><button class="text-button" data-edit="people" data-id="${p.id}">Edytuj</button></td>`:''}</tr>`).join('')}</tbody></table></div>`;
 }
 function renderPeople() {
   const groups=[...new Set(people().map(p=>p.group_name).filter(Boolean))].sort();
-  const list=people().filter(p=>(!search || `${p.name} ${p.email} ${p.phone}`.toLocaleLowerCase('pl').includes(search.toLocaleLowerCase('pl')))&&(!roleFilter||p.role===roleFilter)&&(!groupFilter||p.group_name===groupFilter));
-  $('#view').innerHTML=`<section class="panel"><div class="list-toolbar"><div><h2>Osoby <span class="count">${people().length}</span></h2><p class="muted">Role i grupy dotyczą wybranej edycji.</p></div><div class="filters"><label class="sr-only" for="search">Szukaj osoby</label><input id="search" type="search" placeholder="Szukaj osoby…" value="${esc(search)}"><select id="role-filter" aria-label="Filtruj role"><option value="">Wszystkie role</option>${roles.map(r=>`<option ${r===roleFilter?'selected':''}>${r}</option>`).join('')}</select><select id="group-filter" aria-label="Filtruj grupy"><option value="">Wszystkie grupy</option>${groups.map(g=>`<option ${g===groupFilter?'selected':''}>${esc(g)}</option>`).join('')}</select></div></div>${list.length?personTable(list):empty('Brak osób do wyświetlenia','Zmień filtry lub dodaj pierwszą osobę.','people','Dodaj osobę')}</section>`;
+  const list=people().filter(p=>(!search || `${p.name} ${p.email} ${p.phone}`.toLocaleLowerCase('pl').includes(search.toLocaleLowerCase('pl')))&&(!roleFilter||p.role_names.includes(roleFilter))&&(!groupFilter||p.group_name===groupFilter));
+  $('#view').innerHTML=`<section class="panel"><div class="list-toolbar"><div><h2>Osoby <span class="count">${people().length}</span></h2><p class="muted">${showAllPeople?'Wspólna baza osób, również bez przypisanej edycji.':'Osoby w wybranej edycji. Kliknij Edytuj, aby otworzyć kartę.'}</p></div><div class="filters"><select id="people-scope" aria-label="Zakres osób"><option value="edition" ${!showAllPeople?'selected':''}>Wybrana edycja</option><option value="all" ${showAllPeople?'selected':''}>Wszystkie osoby</option></select><label class="sr-only" for="search">Szukaj osoby</label><input id="search" type="search" placeholder="Szukaj osoby…" value="${esc(search)}"><select id="role-filter" aria-label="Filtruj role"><option value="">Wszystkie role</option>${roles().map(r=>`<option ${r===roleFilter?'selected':''}>${esc(r)}</option>`).join('')}</select><select id="group-filter" aria-label="Filtruj grupy"><option value="">Wszystkie grupy</option>${groups.map(g=>`<option ${g===groupFilter?'selected':''}>${esc(g)}</option>`).join('')}</select></div></div>${list.length?personTable(list):empty('Brak osób do wyświetlenia','Zmień filtry lub dodaj pierwszą osobę.','people','Dodaj osobę')}</section>`;
 }
 function renderMeetings() {
   $('#view').innerHTML=`<section class="panel"><div class="section-heading"><div><span class="eyebrow">KROK PO KROKU</span><h2>Harmonogram spotkań <span class="count">${meetings().length}</span></h2></div></div>${meetings().length?meetings().map(m=>meetingCard(m)).join(''):empty('Pierwsze spotkanie przed Wami','Ustal temat, termin i miejsce.','meetings','Dodaj spotkanie')}</section>`;
@@ -82,7 +87,7 @@ function renderTasks() {
 function renderSettings() {
   const parish=state.parishes.find(p=>p.id===parishId);
   const list=state.editions.filter(e=>e.parish_id===parishId);
-  $('#view').innerHTML=`<div class="settings-grid"><section class="panel"><div class="section-heading"><div><span class="eyebrow">TWOJA WSPÓLNOTA</span><h2>${esc(parish?.name || 'Dodaj parafię')}</h2><p class="muted">${esc(parish?.city || '')}</p></div>${parish?`<button class="text-button" data-edit="parishes" data-id="${parish.id}">Edytuj</button>`:''}</div><p class="settings-copy">Każda parafia ma własne edycje, osoby i zadania. Przełączysz parafię w menu po lewej stronie.</p><div class="info-note">Wersja lokalna dla organizatorów. Przed wprowadzeniem rzeczywistych danych potrzebne są logowanie, kontrola dostępu i ustalenie zasad przetwarzania danych.</div></section><section class="panel"><div class="section-heading"><div><span class="eyebrow">KOLEJNE POCZĄTKI</span><h2>Edycje Alpha</h2></div><button class="text-button" data-add="editions" ${!parishId?'disabled':''}>＋ Nowa edycja</button></div>${list.length?list.map(e=>`<div class="edition-row"><div><strong>${esc(e.name)}</strong><small>${dateLabel(e.date)} · ${esc(e.location || 'Miejsce do ustalenia')}</small></div>${badge(e.status)}<button class="text-button" data-edit="editions" data-id="${e.id}">Edytuj</button></div>`).join(''):empty('Pierwsza edycja','Dodaj edycję dla tej parafii.','editions','Dodaj edycję')}</section></div>`;
+  $('#view').innerHTML=`<div class="settings-grid"><section class="panel"><div class="section-heading"><div><span class="eyebrow">TWOJA WSPÓLNOTA</span><h2>${esc(parish?.name || 'Dodaj parafię')}</h2><p class="muted">${esc(parish?.city || '')}</p></div>${parish?`<button class="text-button" data-edit="parishes" data-id="${parish.id}">Edytuj</button>`:''}</div><p class="settings-copy">Parafia ma wiele edycji. Osoba może należeć do wielu parafii i edycji, albo pozostać bez przypisania. Przełączysz parafię w menu po lewej stronie.</p><div class="info-note">Wersja lokalna dla organizatorów. Przed wprowadzeniem rzeczywistych danych potrzebne są logowanie, kontrola dostępu i ustalenie zasad przetwarzania danych.</div></section><section class="panel"><div class="section-heading"><div><span class="eyebrow">KOLEJNE POCZĄTKI</span><h2>Edycje Alpha</h2></div><button class="text-button" data-add="editions" ${!parishId?'disabled':''}>＋ Nowa edycja</button></div>${list.length?list.map(e=>`<div class="edition-row"><div><strong>${esc(e.name)}</strong><small>${esc(e.date)} — ${esc(e.end_date||'do ustalenia')} · ${esc(e.location || 'Miejsce do ustalenia')}</small></div>${badge(e.status)}<button class="text-button" data-edit="editions" data-id="${e.id}">Edytuj</button></div>`).join(''):empty('Pierwsza edycja','Dodaj edycję dla tej parafii.','editions','Dodaj edycję')}</section></div><section class="panel roles-panel"><div class="section-heading"><div><span class="eyebrow">WŁASNY SŁOWNIK</span><h2>Role w edycjach</h2></div><button class="text-button" data-add="roles">＋ Dodaj rolę</button></div><div class="role-list">${state.roles.map(r=>`<button class="role-chip" data-edit="roles" data-id="${r.id}">${esc(r.name)} <span>✎</span></button>`).join('')}</div></section>`;
 }
 function input(name,label,type='text',required=false,value='') {
   return `<label class="field"><span>${label}${required?' <span class="required">*</span>':''}</span><input name="${name}" type="${type}" ${required?'required':''} maxlength="200" value="${esc(value)}"></label>`;
@@ -91,18 +96,27 @@ function select(name,label,options,value='') {
   return `<label class="field"><span>${label}</span><select name="${name}">${options.map(o=>`<option ${o===value?'selected':''}>${esc(o)}</option>`).join('')}</select></label>`;
 }
 function openForm(table,id) {
-  if(!['parishes','editions'].includes(table)&&!editionId) return;
+  if(['meetings','tasks'].includes(table)&&!editionId) return;
   if(table==='editions'&&!parishId) return toast('Najpierw dodaj parafię.');
   const item=id?state[table].find(x=>x.id===Number(id)):{};
   formContext={table,id,item};
-  const names={people:'osobę',meetings:'spotkanie',tasks:'zadanie',parishes:'parafię',editions:'edycję'};
+  const names={people:'osobę',meetings:'spotkanie',tasks:'zadanie',parishes:'parafię',editions:'edycję',roles:'rolę'};
   $('#modal-title').textContent=`${id?'Edytuj':'Dodaj'} ${names[table]}`;
   $('#form-error').textContent=''; $('#save-button').hidden=false;
   const v=(key,fallback='')=>item[key]??fallback;
   let html='';
+  if(table==='roles') html=input('name','Nazwa roli','text',true,v('name'));
   if(table==='parishes') html=input('name','Nazwa parafii','text',true,v('name'))+input('city','Miejscowość','text',false,v('city'));
-  if(table==='editions') html=input('name','Nazwa edycji','text',true,v('name'))+input('date','Data rozpoczęcia','date',true,v('date',today()))+input('location','Miejsce spotkań','text',false,v('location'))+select('status','Status',['Planowana','Trwa','Zakończona'],v('status','Planowana'));
-  if(table==='people') html=input('name','Imię i nazwisko','text',true,v('name'))+`<div class="field-grid">${input('email','E-mail','email',false,v('email'))}${input('phone','Telefon','tel',false,v('phone'))}</div>`+select('role','Rola w tej edycji',roles,v('role','Uczestnik'))+input('group_name','Grupa (np. Grupa 1)','text',false,v('group_name'))+select('status','Status zgłoszenia',['Zgłoszony','Potwierdzony','Rezygnacja'],v('status','Zgłoszony'))+'<p class="form-note">Zapisuj wyłącznie informacje organizacyjne. Nie dodawaj treści rozmów ani ocen uczestnika.</p>';
+  if(table==='editions') html=input('name','Nazwa edycji','text',true,v('name'))+input('date','Rozpoczęcie','month',true,v('date',today()).slice(0,7))+input('end_date','Zakończenie','month',true,v('end_date',today()).slice(0,7))+input('location','Miejsce spotkań','text',false,v('location'))+select('status','Status',['Planowana','Trwa','Zakończona'],v('status','Planowana'));
+  if(table==='people') {
+    const enrollments=item.enrollments || (editionId?[{edition_id:editionId,status:'Zgłoszony',group_name:'',role_ids:[state.roles.find(r=>r.name==='Uczestnik')?.id].filter(Boolean)}]:[]);
+    html=input('name','Imię i nazwisko','text',true,v('name'))+`<div class="field-grid">${input('email','E-mail','email',false,v('email'))}${input('phone','Telefon','tel',false,v('phone'))}</div>`;
+    html+=`<details class="relationships" ${id?'':'open'}><summary>Edycje i role <span>· opcjonalne</span></summary><p class="form-note">Ta sama osoba może uczestniczyć lub służyć w wielu edycjach. Odznaczenie edycji usuwa jej przypisanie i obecności.</p>${state.editions.map(e=>{
+      const member=enrollments.find(x=>x.edition_id===e.id);
+      return `<fieldset class="membership" data-enrollment="${e.id}"><label class="check-field"><input type="checkbox" name="join_${e.id}" ${member?'checked':''}><strong>${esc(e.name)}</strong></label><small>${esc(state.parishes.find(p=>p.id===e.parish_id)?.name)}</small><div class="membership-fields" ${member?'':'hidden'}>${select('status_'+e.id,'Status',['Zgłoszony','Potwierdzony','Rezygnacja'],member?.status||'Zgłoszony')}${input('group_'+e.id,'Grupa','text',false,member?.group_name||'')}<span class="small-label">Role w tej edycji (możesz wybrać kilka)</span><div class="role-checkboxes">${state.roles.map(r=>`<label class="check-field"><input type="checkbox" name="role_${e.id}_${r.id}" ${member?.role_ids.includes(r.id)?'checked':''}>${esc(r.name)}</label>`).join('')}</div></div></fieldset>`;
+    }).join('')}</details>`;
+    html+=`<details class="relationships"><summary>Powiązania z parafiami <span>· opcjonalne</span></summary>${state.parishes.map(p=>`<label class="check-field"><input type="checkbox" name="parish_${p.id}" ${item.parish_ids?.includes(p.id)?'checked':''}>${esc(p.name)}</label>`).join('')}</details>`;
+  }
   if(table==='meetings') html=input('title','Temat spotkania','text',true,v('title'))+`<div class="field-grid">${input('date','Data','date',true,v('date',today()))}${input('time','Godzina','time',true,v('time','19:00'))}</div>`+input('location','Miejsce','text',false,v('location',edition()?.location));
   if(table==='tasks') html=input('title','Co trzeba zrobić?','text',true,v('title'))+input('owner','Osoba odpowiedzialna','text',false,v('owner'))+input('date','Termin','date',true,v('date',today()))+`<label class="check-field"><input type="checkbox" name="done" ${item.done?'checked':''}> Zadanie ukończone</label>`;
   if(id&&['people','tasks','meetings'].includes(table)) html+='<button type="button" class="delete-button" id="delete-entry">Usuń wpis</button>';
@@ -136,6 +150,8 @@ document.addEventListener('change',async e=>{
   const t=e.target;
   if(t.id==='parish') { parishId=Number(t.value);editionId=undefined;search='';roleFilter='';groupFilter='';await refresh().catch(err=>toast(err.message)); }
   if(t.id==='edition') { editionId=Number(t.value);search='';roleFilter='';groupFilter='';render(); }
+  if(t.name?.startsWith('join_')) t.closest('fieldset').querySelector('.membership-fields').hidden=!t.checked;
+  if(t.id==='people-scope') {showAllPeople=t.value==='all';renderPeople();}
   if(t.id==='role-filter') {roleFilter=t.value;renderPeople();}
   if(t.id==='group-filter') {groupFilter=t.value;renderPeople();}
   if(t.dataset.toggleTask) {
@@ -156,8 +172,9 @@ document.addEventListener('input',e=>{
 $('#entry-form').addEventListener('submit',async e=>{
   e.preventDefault();if(!formContext) return;
   const {table,id,item}=formContext;
-  const body=Object.fromEntries(new FormData(e.target));
-  if(['people','tasks','meetings'].includes(table)) body.edition_id=item.edition_id??editionId;
+  let body=Object.fromEntries(new FormData(e.target));
+  if(table==='people') body={name:body.name,email:body.email,phone:body.phone,parish_ids:state.parishes.filter(p=>body['parish_'+p.id]).map(p=>p.id),enrollments:state.editions.filter(ed=>body['join_'+ed.id]).map(ed=>({edition_id:ed.id,status:body['status_'+ed.id],group_name:body['group_'+ed.id]||'',role_ids:state.roles.filter(r=>body['role_'+ed.id+'_'+r.id]).map(r=>r.id)}))};
+  if(['tasks','meetings'].includes(table)) body.edition_id=item.edition_id??editionId;
   if(table==='editions') body.parish_id=item.parish_id??parishId;
   if(table==='tasks') body.done=e.target.elements.done.checked;
   $('#save-button').disabled=true;

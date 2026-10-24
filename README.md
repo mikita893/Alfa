@@ -1,49 +1,51 @@
-# Alpha — przestrzeń organizatorów
+# Alpha — organizatorzy
 
-Pierwsza lokalna wersja aplikacji do organizacji katolickich kursów Alpha. Domyślnie jedna parafia; można dodać kolejne i przełączać ich edycje. Interfejs w języku polskim, dostosowany do telefonu i komputera.
+Prosty CRM dla organizatorów katolickich kursów Alpha. Na pierwszym ekranie: edycja i uczestnicy. Harmonogram, zadania, parafie, słownik ról i powiązania są na kolejnych kartach.
 
-## Uruchomienie
+## Uruchomienie i sprawdzenie
 
-Wymagany **Node.js 24 lub nowszy** (wbudowany `node:sqlite`). Brak zewnętrznych zależności i etapu budowania.
+Node.js 24+. Brak zewnętrznych zależności i procesu budowania.
 
 ```sh
-cd /workspace/Alfa
 npm start
-```
-
-Serwer słucha wyłącznie na interfejsie lokalnym, port 3000. `npm run dev` uruchamia serwer z automatycznym restartem po zmianie kodu serwera. Po zmianie plików interfejsu odśwież przeglądarkę.
-
-```sh
 npm run check
 npm test
 ```
 
-Test integracyjny uruchamia osobny serwer z tymczasową bazą i sprawdza zapis osób, wiele parafii, relacje edycji, walidację, obecności, ukończenie zadań, trwałość po restarcie i usuwanie powiązanych obecności.
+Domyślnie nasłuch wyłącznie lokalny, port 3000. Nie jest to publiczne wdrożenie. Test integracyjny uruchamia własne serwery, używa osobnej tymczasowej bazy i kończy ich działanie.
 
-## Co działa
+## Model danych
 
-- Pulpit wybranej edycji: uczestnicy, zespół, grupy, spotkania i zadania.
-- Dodawanie i edycja parafii oraz edycji kursu.
-- Dodawanie, edycja, usuwanie i wyszukiwanie osób; role, statusy i grupy w ramach edycji.
-- Filtry po roli i grupie. Grupa jest na razie nazwą przypisaną osobie.
-- Spotkania: temat, data, godzina i miejsce; lista obecności zapisywana od razu.
-- Zadania: termin, osoba odpowiedzialna i ukończenie.
-- Dane w trwałej bazie SQLite; zmiana parafii lub edycji zmienia zakres widocznych wpisów.
+- Parafia ma wiele edycji. Edycja ma wymagane rozpoczęcie i zakończenie. Formularz używa miesięcy; API przyjmuje miesiące lub pełne daty, np. `2026-10` albo `2026-10-15`.
+- Karta osoby (imię, nazwisko, kontakt) jest niezależna od edycji i parafii.
+- Osoba może mieć zero lub wiele powiązań z parafiami oraz zero lub wiele udziałów w edycjach.
+- Każdy udział ma własny status, grupę i dowolną liczbę ról. Słownik ról można dodawać i edytować w ustawieniach.
+- Usunięcie przypisania do edycji usuwa obecności tej osoby w tej edycji; formularz uprzedza o tym. Nie usuwa jej karty ani innych udziałów.
+- Powiązanie osoby z parafią jest niezależne od udziału w edycji.
 
-## Dane i ograniczenia prototypu
+Na nowej bazie aplikacja zakłada parafię **Zmartwychwstania Pańskiego**, edycję **Jesienna 2026/2027 · Zmartwychwstania Pańskiego**, rozpoczęcie **2026-10**, zakończenie **2027-01** i osobę **Osoba Testowa** (`osoba.testowa@example.com`). Nie zgadujemy miejscowości ani dokładnych dni spotkań. Dane można edytować w interfejsie.
 
-Przy pierwszym uruchomieniu tworzona jest baza `data/alfa.sqlite` i fikcyjna parafia z przykładowymi osobami (adresy `example.com`). Baza i jej pliki WAL są ignorowane przez Git. Zatrzymaj serwer przed kopiowaniem całego katalogu `data` jako lokalnej kopii zapasowej. Nie usuwaj katalogu, jeśli zawiera potrzebne dane.
+## Trwałość i migracja
 
-Można wskazać inną bazę, port i wyłączyć wypełnienie nowej bazy przykładami:
+SQLite: `data/alfa.sqlite` oraz pliki WAL. Katalog jest ignorowany przez Git i Docker. Przed aktualizacją wykonaj kopię zapasową przy zatrzymanej aplikacji (lub użyj mechanizmu SQLite backup/VACUUM INTO). Migracja zachowuje stare karty osób i obecności; nie scala automatycznie podobnych nazwisk ani adresów e-mail. Stare daty zakończenia pozostają do uzupełnienia. Historyczne tabele pozostają jako kopia po migracji; zmiany interfejsu zapisują się w nowym modelu.
 
-```sh
-ALFA_DB=/tmp/alfa-empty.sqlite ALFA_SEED=0 PORT=3001 npm start
-```
+`ALFA_DB` wskazuje ścieżkę bazy, `PORT` port, `ALFA_SEED=0` wyłącza dodawanie danych startowych. Startowe wpisy tworzone są tylko, jeśli ich brakuje; edycja wprowadzona przez organizatora nie jest nadpisywana przy restarcie. Osoba testowa może zostać ponownie dodana po usunięciu, jeśli seed jest włączony — na docelowym serwerze po inicjalizacji ustaw `ALFA_SEED=0`.
 
-`ALFA_SEED=0` działa przy tworzeniu bazy; nie usuwa już zapisanych danych. Wszystkie daty i godziny spotkań są lokalnymi terminami organizatora. Pulpit ustala bieżący dzień według strefy Europe/Warsaw.
+## Wdrożenie na serwerze
 
-**To lokalny prototyp bez logowania. Używaj danych testowych.** Dostęp do aplikacji oznacza dostęp do wszystkich parafii. Podział parafii w interfejsie nie jest granicą uprawnień. Przed udostępnieniem aplikacji i wprowadzeniem danych rzeczywistych potrzebne są uwierzytelnianie organizatorów, uprawnienia do parafii, dziennik audytowy, bezpieczne wdrożenie, kopie zapasowe oraz zasady przetwarzania i retencji danych.
+Potrzebny hosting z Node.js 24 lub Dockerem, **trwałym dyskiem** i HTTPS. Statyczny hosting plików (np. same GitHub Pages) nie obsłuży API i SQLite. Środowisko rozmowy ChatGPT nie stanowi publicznego hostingu aplikacji.
 
-Osoba jest na tym etapie wpisem w jednej edycji z jedną rolą. W kolejnej wersji można oddzielić wspólną kartę osoby od udziałów i wielu ról w edycjach. Osoby odpowiedzialne za zadania są obecnie zapisywane jako tekst. Brak wysyłki wiadomości, publicznych zapisów, płatności i portalów uczestników. Edycje i parafie nie mają operacji usuwania, aby uniknąć przypadkowej utraty całych zbiorów.
+Dockerfile przygotowuje serwer na porcie 3000. Montuj trwały dysk w `/app/data`; zapewnij uprawnienia zapisu użytkownikowi `node` (UID 1000). Ustaw bezpiecznie w hostingu:
 
-Nie zapisujemy treści rozmów, ocen wiary ani informacji ze spowiedzi.
+- `ALFA_ACCESS_USER` — nazwa organizatora;
+- `ALFA_ACCESS_PASSWORD` — silne hasło, nigdy w repozytorium ani w czacie;
+- `HOST=0.0.0.0` (ustawione w obrazie);
+- `ALFA_DB=/app/data/alfa.sqlite` (ustawione w obrazie).
+
+Serwer odmówi publicznego nasłuchu bez danych logowania. HTTP Basic chroni wszystkie strony i API; reverse proxy musi zapewniać HTTPS i przekazywać nagłówek Authorization. Pierwsze otwarcie adresu wyświetli okno logowania przeglądarki. To jedno współdzielone konto organizatorów, bez indywidualnych uprawnień do parafii. Nie stanowi pełnego systemu kont. Przed użyciem rzeczywistych danych wymagane są odpowiednie zasady dostępu, retencji, kopie zapasowe i ustalenie zasad przetwarzania danych dotyczących religii.
+
+Nie przechowujemy treści rozmów, ocen wiary ani informacji ze spowiedzi. Korzystaj obecnie z danych testowych.
+
+## Projekt wizualny
+
+Układ zbliżony do CRM: przełącznik edycji, lista osób, wyszukiwanie, filtry i karta osoby z rozwijanymi powiązaniami. Ciepła biel i czerwone akcenty stanowią autorską oprawę roboczą; nie używamy oficjalnych logotypów ani nie deklarujemy zgodności z księgą identyfikacji Alpha. Dostęp do oficjalnej strony `polska.alpha.org` był blokowany przez politykę sieci podczas tej sesji, więc przegląd źródeł internetowych pozostaje niewykonany.
