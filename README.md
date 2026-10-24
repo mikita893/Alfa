@@ -39,7 +39,7 @@ SQLite: `data/alfa.sqlite` oraz pliki WAL. Katalog jest ignorowany przez Git i D
 
 ## Dostęp i wdrożenie
 
-Pełna instrukcja: [docs/HOSTING.md](docs/HOSTING.md). Przygotowano `compose.yaml` z aplikacją, trwałym wolumenem SQLite i Caddy do HTTPS. Potrzebujesz hostingu/maszyny i domeny; środowisko rozmowy nie jest publicznym hostingiem.
+Pierwsza konfiguracja i GitHub Actions: [docs/FIRST-DEPLOY.md](docs/FIRST-DEPLOY.md). Pełna instrukcja hostingu: [docs/HOSTING.md](docs/HOSTING.md). Przygotowano `compose.yaml` z aplikacją, trwałym wolumenem SQLite i Caddy do HTTPS. Potrzebujesz hostingu/maszyny i domeny; środowisko rozmowy nie jest publicznym hostingiem.
 
 Wersja 0.3 zastępuje wspólne hasło HTTP Basic osobnymi kontami organizatorów:
 

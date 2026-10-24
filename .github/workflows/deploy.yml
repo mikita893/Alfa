@@ -1,0 +1,48 @@
+name: Deploy Alpha
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: alpha-production
+  cancel-in-progress: false
+jobs:
+  test:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm run check
+      - run: npm test
+      - run: bash -n scripts/deploy.sh
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy tested commit through verified SSH
+        shell: bash
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/alpha' }}
+        run: |
+          set -euo pipefail
+          [[ "$SSH_HOST" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]*$ ]] || { echo 'Set SSH_HOST to a hostname or IPv4 address.'; exit 1; }
+          [[ "$SSH_USER" =~ ^[a-z_][a-z0-9_-]*$ ]] || { echo 'Invalid SSH_USER.'; exit 1; }
+          [[ "$DEPLOY_PATH" =~ ^/[a-zA-Z0-9/_.-]+$ && "$DEPLOY_PATH" != '/' && "$DEPLOY_PATH" != *'..'* ]] || { echo 'Invalid DEPLOY_PATH.'; exit 1; }
+          [[ -n "$SSH_PRIVATE_KEY" && -n "$SSH_KNOWN_HOSTS" ]] || { echo 'Configure SSH secrets in the production environment.'; exit 1; }
+          umask 077
+          ssh_dir=$(mktemp -d)
+          trap 'rm -rf "$ssh_dir"' EXIT
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$ssh_dir/key"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$ssh_dir/known_hosts"
+          ssh -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$ssh_dir/known_hosts" -i "$ssh_dir/key" \
+            "$SSH_USER@$SSH_HOST" "bash -s -- '$GITHUB_SHA' '$DEPLOY_PATH'" < scripts/deploy.sh
